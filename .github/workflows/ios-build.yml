@@ -1,0 +1,93 @@
+# iOS 无 Mac 构建 · GitHub Actions 工作流
+#
+# 用法：
+#   1. 把本 iOS 工程（EMFSchedule.xcodeproj + EMFSchedule/）推到一个 **公开** GitHub 仓库
+#      （公开仓库的 macOS runner 免费；私有仓库 macOS 分钟数按 10 倍计费）
+#   2. 把本文件放到该仓库的 .github/workflows/ios-build.yml
+#   3. Actions 页手动触发「iOS Build」或 push 即自动构建
+#   4. 在构建产物的 Artifacts 里下载 unsigned 的 .app
+#
+# 说明：
+#   - 「无签名构建」免费且零配置，可验证编译、产出 .app（不能直接装真机）
+#   - 「签名 + 导出 IPA」（下方注释掉的步骤）需要 Apple Developer 账号（99 美元/年），
+#     把证书（.p12 密码）与描述文件（.mobileprovision）作为 GitHub Secrets 配置后启用
+
+name: iOS Build (no Mac)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "EMFSchedule/**"
+      - "EMFSchedule.xcodeproj/**"
+
+jobs:
+  build-unsigned:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 查看可用 Xcode 版本
+        run: ls /Applications | grep Xcode || true
+
+      - name: xcodebuild 无签名构建（验证编译）
+        run: |
+          xcodebuild \
+            -project EMFSchedule.xcodeproj \
+            -scheme EMFSchedule \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: 打包 .app 产物
+        run: |
+          mkdir -p dist
+          cp -R build/Build/Products/Release-iphoneos/EMFSchedule.app dist/
+          cd dist && zip -ry EMFSchedule-unsigned.zip EMFSchedule.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EMFSchedule-unsigned
+          path: dist/EMFSchedule-unsigned.zip
+          retention-days: 30
+
+  # ---- 签名并导出可安装 IPA（需要 Apple Developer 账号，取消注释后启用）----
+  # build-signed:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: 导入签名证书与描述文件（来自 GitHub Secrets）
+  #       env:
+  #         P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}          # 开发/分发证书 .p12 的 base64
+  #         P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+  #         PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}  # .mobileprovision 的 base64
+  #       run: |
+  #         KEYCHAIN=build.keychain
+  #         security create-keychain -p ci $KEYCHAIN
+  #         security default-keychain -s $KEYCHAIN
+  #         security unlock-keychain -p ci $KEYCHAIN
+  #         echo "$P12_BASE64" | base64 -d > cert.p12
+  #         security import cert.p12 -k $KEYCHAIN -P "$P12_PASSWORD" -A
+  #         security set-key-partition-list -S apple-tool:,apple: -s -k ci $KEYCHAIN
+  #         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+  #         echo "$PROVISION_BASE64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/build.mobileprovision
+  #
+  #     - name: xcodebuild 归档 + 导出 IPA
+  #       run: |
+  #         xcodebuild archive \
+  #           -project EMFSchedule.xcodeproj -scheme EMFSchedule \
+  #           -sdk iphoneos -configuration Release \
+  #           -archivePath build/EMFSchedule.xcarchive
+  #         xcodebuild -exportArchive \
+  #           -archivePath build/EMFSchedule.xcarchive \
+  #           -exportPath dist -exportOptionsPlist ExportOptions.plist
+  #
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: EMFSchedule-signed
+  #         path: dist/*.ipa
+  #         retention-days: 30
